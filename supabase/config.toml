@@ -1,0 +1,4 @@
+project_id = "pw-provvigioni"
+
+[functions.provvigioni-admin]
+verify_jwt = true

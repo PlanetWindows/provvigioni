@@ -1,9 +1,22 @@
 const DEFAULT_RULES={discounts:[0,.10,.20,.30,.40],A:[.44,.35,.25,.16,.08],B:[.28,.22,.15,.10,.04],extraHold:.11};
+const AGENT_STEPS=[.15,.25,.35];
 const STORE='pw_provvigioni_v1', RULE_STORE='pw_provvigioni_rules_v1';
 let practices=[], rules=structuredClone(DEFAULT_RULES), editingId=null;
 function load(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):JSON.parse(JSON.stringify(d))}catch(e){return JSON.parse(JSON.stringify(d))}}
 const euro=n=>new Intl.NumberFormat('it-IT',{style:'currency',currency:'EUR'}).format(Number(n)||0); const pct=n=>Number.isFinite(n)?new Intl.NumberFormat('it-IT',{style:'percent',minimumFractionDigits:0,maximumFractionDigits:2}).format(n):'—';
 function esc(s){return String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
+function discountsFor(option){return option==='A'?[...new Set([...rules.discounts,...AGENT_STEPS])].sort((a,b)=>a-b):rules.discounts;}
+function ruleRate(option,discount){
+  const i=rules.discounts.findIndex(d=>Math.abs(d-discount)<1e-8);
+  if(i>=0)return rules[option][i];
+  if(option!=='A'||!AGENT_STEPS.some(d=>Math.abs(d-discount)<1e-8))return null;
+  const stored=rules.extraA?.[Math.round(discount*100)];
+  if(Number.isFinite(stored)&&stored>=0&&stored<=1)return stored;
+  // For older saved rules, insert the midpoint of the two existing A rates.
+  const before=rules.discounts.findIndex(d=>Math.abs(d-(discount-.05))<1e-8);
+  const after=rules.discounts.findIndex(d=>Math.abs(d-(discount+.05))<1e-8);
+  return before>=0&&after>=0?+((rules.A[before]+rules.A[after])/2).toFixed(8):null;
+}
 function calculate(p){
   const close=Number(p.close), services=p.services===''||p.services==null?0:Number(p.services);
   const legacyList=p.list===''||p.list==null?null:Number(p.list);
@@ -14,19 +27,18 @@ function calculate(p){
   if(discount===null && Number.isFinite(legacyList) && legacyList>0) discount=Math.max(0,1-final/legacyList);
   if(discount===null||!Number.isFinite(discount)||discount<0||discount>1){return {final,outcome:'Inserisci lo sconto applicato',kind:'warn',commission:null};}
   if(p.status==='Annullata') return {final,discount,outcome:'Annullata',kind:'neutral',commission:0};
-  const idx=rules.discounts.findIndex(d=>Math.abs(d-discount)<1e-8);
-  if(idx<0){return {final,discount,outcome:'Sconto non presente in tabella',kind:'warn',commission:null};}
-  const rate=rules[p.option][idx];
+  const rate=ruleRate(p.option,discount);
+  if(!Number.isFinite(rate)){return {final,discount,outcome:'Sconto non presente in tabella',kind:'warn',commission:null};}
   const commission=+(final*rate).toFixed(2);
   return {final,discount,rate,commission,outcome:'Automatico da tabella',kind:'ok'};
 }
 function fillCalc(){const p=getForm(),c=calculate(p);cFinal.textContent=c.final!=null?euro(c.final):'—';cDelta.textContent=c.discount!=null?pct(c.discount):'—';cRate.textContent=c.rate!=null?pct(c.rate):'—';cCommission.textContent=c.commission!=null?euro(c.commission):'—';cOutcome.innerHTML=`<span class="status ${c.kind||'neutral'}">${esc(c.outcome||'Da compilare')}</span>`}
-['fId','fClient','fAgent','fOption','fStatus','fClose','fServices','fDiscount','fNotes'].forEach(id=>document.getElementById(id).addEventListener('input',fillCalc));
+['fId','fClient','fAgent','fOption','fStatus','fClose','fServices','fDiscount','fNotes'].forEach(id=>document.getElementById(id).addEventListener('input',()=>{if(id==='fOption')renderDiscountOptions();fillCalc();}));
 resetFormBtn.onclick=resetForm;
 window.editPractice=editPractice;window.deletePractice=deletePractice;
 function renderPractices(){const q=search.value.trim().toLowerCase(),fa=filterAgent.value,fs=filterStatus.value,fo=filterOption.value;const list=practices.filter(p=>(!q||[p.id,p.client,p.agent].some(v=>String(v).toLowerCase().includes(q)))&&(!fa||p.agent===fa)&&(!fs||p.status===fs)&&(!fo||p.option===fo));practiceCount.textContent=`${list.length} ${list.length===1?'pratica':'pratiche'}`;practiceBody.innerHTML=list.length?list.map(p=>{const c=calculate(p);return `<tr><td><b>${esc(p.id)}</b></td><td>${esc(p.client)}</td><td>${esc(p.agent)}</td><td>${esc(p.option)}</td><td>${esc(p.status)}</td><td class="money">${euro(p.close)}</td><td class="money">${euro(p.services||0)}</td><td class="money"><b>${c.final!=null?euro(c.final):'—'}</b></td><td>${c.discount!=null?pct(c.discount):'—'}</td><td>${c.rate!=null?pct(c.rate):'—'}</td><td class="money"><b>${c.commission!=null?euro(c.commission):'—'}</b></td><td><span class="status ${c.kind||'neutral'}">${esc(c.outcome)}</span></td><td><button class="btn small" onclick="editPractice('${p._uid}')">Modifica</button> <button class="btn small danger" onclick="deletePractice('${p._uid}')">Elimina</button></td></tr>`}).join(''):`<tr><td colspan="13" class="empty">Nessuna pratica inserita.</td></tr>`;}
 function renderSummary(){const map=Object.create(null);let closedTotal=0,openTotal=0,closedCount=0,undef=0;practices.forEach(p=>{const c=calculate(p);if(!map[p.agent])map[p.agent]={open:0,closed:0,sales:0,A:0,B:0,openComm:0,undef:0};const a=map[p.agent];if(p.status==='Annullata')return;if(c.commission==null){a.undef++;undef++;}if(p.status==='Chiusa'){a.closed++;closedCount++;a.sales+=c.final||0;if(c.commission!=null){a[p.option]+=c.commission;closedTotal+=c.commission}}else if(p.status==='Aperta'){a.open++;if(c.commission!=null){a.openComm+=c.commission;openTotal+=c.commission}}});kpiClosed.textContent=euro(closedTotal);kpiOpen.textContent=euro(openTotal);kpiClosedCount.textContent=closedCount;kpiUndefined.textContent=undef;const names=Object.keys(map).filter(Boolean).sort((a,b)=>a.localeCompare(b,'it'));summaryBody.innerHTML=names.length?names.map(n=>{const a=map[n];return `<tr><td><b>${esc(n)}</b></td><td>${a.open}</td><td>${a.closed}</td><td class="money">${euro(a.sales)}</td><td class="money">${euro(a.A)}</td><td class="money">${euro(a.B)}</td><td class="money"><b>${euro(a.A+a.B)}</b></td><td class="money">${euro(a.openComm)}</td><td>${a.undef?`<span class="status warn">${a.undef}</span>`:'0'}</td></tr>`}).join(''):`<tr><td colspan="9" class="empty">Aggiungi la prima pratica per vedere il riepilogo.</td></tr>`}
-function renderDiscountOptions(){const current=fDiscount.value;fDiscount.innerHTML='<option value="">Seleziona sconto</option>'+rules.discounts.map(d=>`<option value="${(d*100).toFixed(8).replace(/0+$/,'').replace(/\.$/,'')}">${pct(d)}</option>`).join('');if([...fDiscount.options].some(o=>o.value===current))fDiscount.value=current;}
+function renderDiscountOptions(){const current=fDiscount.value;fDiscount.innerHTML='<option value="">Seleziona sconto</option>'+discountsFor(fOption.value).map(d=>`<option value="${(d*100).toFixed(8).replace(/0+$/,'').replace(/\.$/,'')}">${pct(d)}</option>`).join('');if([...fDiscount.options].some(o=>o.value===current))fDiscount.value=current;}
 function renderAll(){renderAgents();renderPractices();renderSummary();renderRules();}
 [search,filterAgent,filterStatus,filterOption].forEach(el=>el.addEventListener('input',renderPractices));
 document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x===b));document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.id===b.dataset.tab));});
@@ -72,8 +84,14 @@ function renderAgents(){
   filterAgent.innerHTML='<option value="">'+(isOffice()?'Tutti gli agenti':'Le mie pratiche')+'</option>'+names.map(n=>`<option>${esc(n)}</option>`).join('');
   filterAgent.value=names.includes(previous)?previous:'';
 }
+function ruleInput(option,discount){
+  const rate=ruleRate(option,discount);if(!Number.isFinite(rate))return '—';
+  const i=rules.discounts.findIndex(d=>Math.abs(d-discount)<1e-8);
+  const data=i<0?`data-extra="${Math.round(discount*100)}"`:`data-i="${i}"`;
+  return `<input data-r="${option}" ${data} type="number" step="0.01" min="0" max="100" value="${+(rate*100).toFixed(2)}" ${isOffice()?'':'disabled'}> %`;
+}
 function renderRules(){
-  rulesBody.innerHTML=rules.discounts.map((d,i)=>`<tr><td><b>${pct(d)}</b></td><td><input data-r="A" data-i="${i}" type="number" step="0.01" min="0" max="100" value="${(rules.A[i]*100).toFixed(2).replace(/\.00$/,'')}" ${isOffice()?'':'disabled'}> %</td><td><input data-r="B" data-i="${i}" type="number" step="0.01" min="0" max="100" value="${(rules.B[i]*100).toFixed(2).replace(/\.00$/,'')}" ${isOffice()?'':'disabled'}> %</td></tr>`).join('');
+  rulesBody.innerHTML=discountsFor('A').map(d=>`<tr><td><b>${pct(d)}</b></td><td>${ruleInput('A',d)}</td><td>${ruleInput('B',d)}</td></tr>`).join('');
   saveRulesBtn.hidden=!isOffice();renderDiscountOptions();
 }
 async function allPractices(){
@@ -176,7 +194,8 @@ saveRulesBtn.onclick=async()=>{
   if(!isOffice()||busy)return;const next=structuredClone(rules);
   for(const inp of document.querySelectorAll('#rulesBody input')){
     const value=Number(inp.value);if(inp.value===''||!Number.isFinite(value)||value<0||value>100){alert('Inserisci percentuali comprese tra 0 e 100.');return;}
-    next[inp.dataset.r][Number(inp.dataset.i)]=value/100;
+    if(inp.dataset.extra)(next.extraA??={})[inp.dataset.extra]=value/100;
+    else next[inp.dataset.r][Number(inp.dataset.i)]=value/100;
   }
   busy=true;saveRulesBtn.disabled=true;
   try{await writeRules(next);rulesDirty=false;renderAll();fillCalc();message('Regole provvigioni salvate.');}

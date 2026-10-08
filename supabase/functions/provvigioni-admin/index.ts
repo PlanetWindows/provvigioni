@@ -69,7 +69,9 @@ Deno.serve(async (req: Request) => {
       const targets=await api('/rest/v1/provvigioni_accounts?select=*&id=eq.'+data.account_id);
       const target=targets[0]; if(!target || !target.user_id || !target.active) throw new Error('Accesso non disponibile');
       if(data.action==='reset') {
-        const password=randomPassword();
+        const password=data.password===undefined?randomPassword():data.password;
+        if(typeof password!=='string' || password.length<12 || password.length>128)
+          throw new Error('La password deve contenere da 12 a 128 caratteri');
         await api('/auth/v1/admin/users/'+target.user_id,'PUT',{password});
         const validAfter=Math.floor(Date.now()/1000)+1;
         await api('/rest/v1/provvigioni_accounts?id=eq.'+target.id,'PATCH',{valid_after:validAfter});
